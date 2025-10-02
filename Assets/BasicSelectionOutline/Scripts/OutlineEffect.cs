@@ -8,52 +8,55 @@ using static Unity.VisualScripting.Member;
 [RequireComponent(typeof(Camera))]
 public class OutlineEffect : MonoBehaviour
 {
-    [SerializeField] private Material[] targetMaterials;
-    [SerializeField] private Shader stencilWriteShader; // "Hidden/OutlineMask" updated to write stencil, ColorMask 0
-    [SerializeField] private Shader blackOverlayShader; // shader that draws black where stencil != 1
-    [SerializeField] private float falloffDistance = 0.1f;
-    [SerializeField] private float falloffPower = 2.0f;
-    [SerializeField] private Color edgeColor = Color.yellow;
+	[SerializeField] private Material[] targetMaterials;
+	[SerializeField] private Shader stencilWriteShader; // "Hidden/OutlineMask" updated to write stencil, ColorMask 0
+	[SerializeField] private Shader blackOverlayShader; // shader that draws black where stencil != 1
+	[SerializeField] private float falloffDistance = 0.1f;
+	[SerializeField] private float falloffPower = 2.0f;
+	[SerializeField] private Color edgeColor = Color.yellow;
     [SerializeField] private bool _debugging = false;
 
-    private Camera _camera;
-    private Camera _maskCamera;
+	private Camera _camera;
+	private Camera _maskCamera;
     private Material _stencilWriteMaterial;
     private Material _blackOverlayMaterial;
     private RenderTexture _tempRT;
-    private bool _saveDebugMask = false;
-    private List<Renderer> _affectedRenderers = new List<Renderer>();
-    private Dictionary<Renderer, Material[]> _originalMaterials = new Dictionary<Renderer, Material[]>();
-    private List<Renderer> _allRenderers = new List<Renderer>();
-    private List<Vector3> _objectScreenPositions = new List<Vector3>();
+    private RenderTexture _sdfRT;
+    private RenderTexture _edgeMinRT;
+    private ComputeShader _computeShader;
+	private bool _saveDebugMask = false;
+	private List<Renderer> _affectedRenderers = new List<Renderer>();
+	private Dictionary<Renderer, Material[]> _originalMaterials = new Dictionary<Renderer, Material[]>();
+	private List<Renderer> _allRenderers = new List<Renderer>();
+	private List<Vector3> _objectScreenPositions = new List<Vector3>();
 
     private void OnEnable()
-    {
-        _camera = GetComponent<Camera>();
-        InitResources();
-    }
+	{
+		_camera = GetComponent<Camera>();
+		InitResources();
+	}
 
-    private void OnDisable()
-    {
-        CleanupRT();
-        if (_maskCamera != null)
-        {
-            if (Application.isPlaying) Destroy(_maskCamera.gameObject);
-            else DestroyImmediate(_maskCamera.gameObject);
-            _maskCamera = null;
-        }
-        if (_stencilWriteMaterial != null)
-        {
-            if (Application.isPlaying) Destroy(_stencilWriteMaterial);
-            else DestroyImmediate(_stencilWriteMaterial);
-            _stencilWriteMaterial = null;
-        }
-        if (_blackOverlayMaterial != null)
-        {
-            if (Application.isPlaying) Destroy(_blackOverlayMaterial);
-            else DestroyImmediate(_blackOverlayMaterial);
-            _blackOverlayMaterial = null;
-        }
+	private void OnDisable()
+	{
+		CleanupRT();
+		if (_maskCamera != null)
+		{
+			if (Application.isPlaying) Destroy(_maskCamera.gameObject);
+			else DestroyImmediate(_maskCamera.gameObject);
+			_maskCamera = null;
+		}
+		if (_stencilWriteMaterial != null) 
+		{ 
+			if (Application.isPlaying) Destroy(_stencilWriteMaterial);
+			else DestroyImmediate(_stencilWriteMaterial); 
+			_stencilWriteMaterial = null; 
+		}
+		if (_blackOverlayMaterial != null) 
+		{ 
+			if (Application.isPlaying) Destroy(_blackOverlayMaterial);
+			else DestroyImmediate(_blackOverlayMaterial); 
+			_blackOverlayMaterial = null; 
+		}
 
         _affectedRenderers.Clear();
         _originalMaterials.Clear();
@@ -61,89 +64,107 @@ public class OutlineEffect : MonoBehaviour
         _objectScreenPositions.Clear();
     }
 
-    private void OnValidate()
-    {
-        if (isActiveAndEnabled)
-            InitResources();
-    }
+	private void OnValidate()
+	{
+		if (isActiveAndEnabled)
+			InitResources();
+	}
 
-    private void Update()
-    {
-        if (Input.GetKeyDown(KeyCode.Space))
-            _saveDebugMask = true;
-    }
+	private void Update()
+	{
+		if (Input.GetKeyDown(KeyCode.Space))
+			_saveDebugMask = true;
+	}
 
-    // Ensure mask camera tracks the main camera before culling/renders
-    private void OnPreCull()
-    {
-        if (_maskCamera == null || _camera == null) return;
-        _maskCamera.transform.position = _camera.transform.position;
-        _maskCamera.transform.rotation = _camera.transform.rotation;
-    }
+	// Ensure mask camera tracks the main camera before culling/renders
+	private void OnPreCull()
+	{
+		if (_maskCamera == null || _camera == null) return;
+		_maskCamera.transform.position = _camera.transform.position;
+		_maskCamera.transform.rotation = _camera.transform.rotation;
+	}
 
-    private void InitResources()
-    {
-        if (_camera == null) _camera = GetComponent<Camera>();
+	private void InitResources()
+	{
+		if (_camera == null) _camera = GetComponent<Camera>();
 
-        if (stencilWriteShader == null)
-            stencilWriteShader = Shader.Find("Hidden/OutlineMask");
-        if (blackOverlayShader == null)
-            blackOverlayShader = Shader.Find("Hidden/MaskComposite");
+		if (stencilWriteShader == null)
+			stencilWriteShader = Shader.Find("Hidden/OutlineMask");
+		if (blackOverlayShader == null)
+			blackOverlayShader = Shader.Find("Hidden/MaskComposite");
+		if (_computeShader == null)
+			_computeShader = Resources.Load<ComputeShader>("ScreenSpaceSDF");
 
-        if (_stencilWriteMaterial == null && stencilWriteShader != null)
-            _stencilWriteMaterial = new Material(stencilWriteShader) { hideFlags = HideFlags.HideAndDontSave };
-        if (_blackOverlayMaterial == null && blackOverlayShader != null)
-            _blackOverlayMaterial = new Material(blackOverlayShader) { hideFlags = HideFlags.HideAndDontSave };
+		if (_stencilWriteMaterial == null && stencilWriteShader != null)
+			_stencilWriteMaterial = new Material(stencilWriteShader) { hideFlags = HideFlags.HideAndDontSave };
+		if (_blackOverlayMaterial == null && blackOverlayShader != null)
+			_blackOverlayMaterial = new Material(blackOverlayShader) { hideFlags = HideFlags.HideAndDontSave };
 
-        if (_maskCamera == null)
+		if (_maskCamera == null)
+		{
+			var go = new GameObject("OutlineEffect_MaskCamera");
+			go.hideFlags = HideFlags.HideAndDontSave;
+			_maskCamera = go.AddComponent<Camera>();
+			// Keep the mask camera aligned with the main camera at all times
+			go.transform.SetParent(_camera.transform, false);
+			go.transform.localPosition = Vector3.zero;
+			go.transform.localRotation = Quaternion.identity;
+			_maskCamera.enabled = false;
+		}
+	}
+
+	private void InitRT(int width, int height)
+	{
+		if (_tempRT != null && (_tempRT.width != width || _tempRT.height != height))
+			CleanupRT();
+		
+		if (_tempRT == null && width > 0 && height > 0)
+		{
+			_tempRT = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
+			_tempRT.name = "OutlineEffect_Temp";
+			_tempRT.Create();
+		}
+        if (_sdfRT == null && width > 0 && height > 0)
         {
-            var go = new GameObject("OutlineEffect_MaskCamera");
-            go.hideFlags = HideFlags.HideAndDontSave;
-            _maskCamera = go.AddComponent<Camera>();
-            // Keep the mask camera aligned with the main camera at all times
-            go.transform.SetParent(_camera.transform, false);
-            go.transform.localPosition = Vector3.zero;
-            go.transform.localRotation = Quaternion.identity;
-            _maskCamera.enabled = false;
+            _sdfRT = new RenderTexture(width, height, 0, RenderTextureFormat.RFloat);
+            _sdfRT.name = "OutlineEffect_SDF";
+            _sdfRT.enableRandomWrite = true;
+            _sdfRT.Create();
         }
-    }
-
-    private void InitRT(int width, int height)
-    {
-        if (_tempRT != null && (_tempRT.width != width || _tempRT.height != height))
-            CleanupRT();
-
-        if (_tempRT == null && width > 0 && height > 0)
-        {
-            _tempRT = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
-            _tempRT.name = "OutlineEffect_Temp";
-            _tempRT.Create();
-        }
-    }
+	}
 
     private void CleanupRT()
-    {
-        if (_tempRT != null)
+	{
+		if (_tempRT != null)
+		{
+			_tempRT.Release();
+			if (Application.isPlaying) Destroy(_tempRT); 
+			else DestroyImmediate(_tempRT);
+			_tempRT = null;
+		}
+        if (_sdfRT != null)
         {
-            _tempRT.Release();
-            if (Application.isPlaying) Destroy(_tempRT);
-            else DestroyImmediate(_tempRT);
-            _tempRT = null;
+            _sdfRT.Release();
+            if (Application.isPlaying) Destroy(_sdfRT); 
+            else DestroyImmediate(_sdfRT);
+            _sdfRT = null;
         }
-    }
+	}
 
-    private void OnRenderImage(RenderTexture source, RenderTexture destination)
-    {
-        InitRender(ref source, ref destination);
-        RenderMask();
-        if (_debugging) DebugRenderState();
+	private void OnRenderImage(RenderTexture source, RenderTexture destination)
+	{
+		InitRender(ref source, ref destination);
+		RenderMask();
+        // Collect object positions before computing origin-based distances
         CollectAllObjectScreenPositions();
+        ComputeEdgeMin();
+        if (_debugging) DebugRenderState();
         BlitOutline(ref source, ref destination);
-    }
+	}
 
-    #region Helper methods
-    private void InitRender(ref RenderTexture source, ref RenderTexture destination)
-    {
+	#region Helper methods
+	private void InitRender(ref RenderTexture source, ref RenderTexture destination)
+	{
         if (_camera == null)
             _camera = GetComponent<Camera>();
         InitResources();
@@ -163,20 +184,20 @@ public class OutlineEffect : MonoBehaviour
 
         _affectedRenderers.Clear();
         _originalMaterials.Clear();
-        _allRenderers.Clear();
+		_allRenderers.Clear();
         _objectScreenPositions.Clear();
         _allRenderers = Object.FindObjectsOfType<Renderer>().ToList();
     }
 
     private void RenderMask()
-    {
+	{
         // Create a mask texture using a secondary camera
         _maskCamera.CopyFrom(_camera);
         _maskCamera.clearFlags = CameraClearFlags.SolidColor;
         _maskCamera.backgroundColor = Color.black;
         _maskCamera.targetTexture = _tempRT;
 
-
+        
         for (int r = 0; r < _allRenderers.Count; r++)
         {
             var renderer = _allRenderers[r];
@@ -205,7 +226,7 @@ public class OutlineEffect : MonoBehaviour
                     tempMats[i] = _stencilWriteMaterial;
                 renderer.sharedMaterials = tempMats;
                 _affectedRenderers.Add(renderer);
-                Debug.Log($"Swapped material on: {renderer.gameObject.name}");
+                //Debug.Log($"Swapped material on: {renderer.gameObject.name}");
             }
         }
 
@@ -220,11 +241,50 @@ public class OutlineEffect : MonoBehaviour
         }
     }
 
+    // Removed JFA-based SDF; origin-based edge distances are used instead
+
+    // Per-object origin-based edge distance accumulation
+    private void ComputeEdgeMin()
+    {
+        if (_tempRT == null || _computeShader == null) return;
+        if (_edgeMinRT == null)
+        {
+            _edgeMinRT = new RenderTexture(_tempRT.width, _tempRT.height, 0, RenderTextureFormat.RFloat);
+            _edgeMinRT.enableRandomWrite = true; _edgeMinRT.Create();
+        }
+
+        int kClear = _computeShader.FindKernel("ClearEdgeMin");
+        _computeShader.SetTexture(kClear, "_EdgeMinOut", _edgeMinRT);
+        _computeShader.SetInts("_TexSize", _tempRT.width, _tempRT.height);
+        _computeShader.Dispatch(kClear, (_tempRT.width+7)/8, (_tempRT.height+7)/8, 1);
+
+        int kOrigin = _computeShader.FindKernel("OriginEdgeDistance");
+        _computeShader.SetTexture(kOrigin, "_MaskTex", _tempRT);
+        _computeShader.SetTexture(kOrigin, "_EdgeMinOut", _edgeMinRT);
+        _computeShader.SetInts("_TexSize", _tempRT.width, _tempRT.height);
+        _computeShader.SetFloat("_StepUV", 0.5f / _tempRT.height); // 0.25 pixel in UV for even finer sampling
+        _computeShader.SetInt("_MaxSteps", 512);
+        _computeShader.SetFloat("_MaxDistance", 0.75f);
+
+        // Upload all origins in one structured buffer (float2 per element)
+        if (_objectScreenPositions.Count > 0)
+        {
+            var origins = new Vector2[_objectScreenPositions.Count];
+            for (int i = 0; i < origins.Length; i++) { var o = _objectScreenPositions[i]; origins[i] = new Vector2(o.x, o.y); }
+            ComputeBuffer buf = new ComputeBuffer(origins.Length, sizeof(float) * 2);
+            buf.SetData(origins);
+            _computeShader.SetBuffer(kOrigin, "_Origins", buf);
+            _computeShader.SetInt("_OriginCount", origins.Length);
+            _computeShader.Dispatch(kOrigin, (_tempRT.width+7)/8, (_tempRT.height+7)/8, 1);
+            buf.Release();
+        }
+    }
+
     /// <summary>
     /// Saves the current mask render texture to a PNG file under Assets if use presses Space Bar in Play Mode
     /// </summary>
 	private void DebugRenderState()
-    {
+	{
         // DEBUG: Save the mask texture to see what's in it
         if (_saveDebugMask)
         {
@@ -252,7 +312,7 @@ public class OutlineEffect : MonoBehaviour
     /// Collects screenspace locations of all target objects for multi-object falloff
     /// </summary>
 	private void CollectAllObjectScreenPositions()
-    {
+	{
         _objectScreenPositions.Clear();
         for (int r = 0; r < _allRenderers.Count; r++)
         {
@@ -284,26 +344,28 @@ public class OutlineEffect : MonoBehaviour
         }
     }
 
-    private void BlitOutline(ref RenderTexture source, ref RenderTexture destination)
-    {
+	private void BlitOutline(ref RenderTexture source, ref RenderTexture destination)
+	{
         // Composite: keep source where mask is white, edge color elsewhere with falloff
         _blackOverlayMaterial.SetTexture("_MainTex", source);
         _blackOverlayMaterial.SetTexture("_MaskTex", _tempRT);
+    _blackOverlayMaterial.SetTexture("_SDFTex", _sdfRT);
+        _blackOverlayMaterial.SetTexture("_EdgeMinTex", _edgeMinRT);
         _blackOverlayMaterial.SetFloat("_FalloffDistance", falloffDistance);
         _blackOverlayMaterial.SetFloat("_FalloffPower", falloffPower);
         _blackOverlayMaterial.SetColor("_EdgeColor", edgeColor);
-
+        
         // Pass object count and positions as arrays (limited to reasonable number)
         int objectCount = Mathf.Min(_objectScreenPositions.Count, 8); // Limit to 8 objects for shader arrays
         _blackOverlayMaterial.SetInt("_ObjectCount", objectCount);
-
+        
         // Set object positions (shader will use first 8)
         for (int i = 0; i < objectCount; i++)
         {
             string propName = $"_ObjectPos{i}";
             _blackOverlayMaterial.SetVector(propName, _objectScreenPositions[i]);
         }
-
+        
         Graphics.Blit(source, destination, _blackOverlayMaterial);
     }
     #endregion Helper methods

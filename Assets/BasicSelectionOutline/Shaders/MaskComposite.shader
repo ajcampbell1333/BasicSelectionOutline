@@ -4,6 +4,8 @@ Shader "Hidden/MaskComposite"
 	{
 		_MainTex ("Source", 2D) = "white" {}
 		_MaskTex ("Mask", 2D) = "black" {}
+		_SDFTex ("SDF", 2D) = "black" {}
+		_EdgeMinTex ("Edge Min Distance", 2D) = "black" {}
         _FalloffDistance ("Falloff Distance", Float) = 0.1
         _FalloffPower ("Falloff Power", Float) = 2.0
         _RaymarchSteps ("Raymarch Steps (max 128)", Int) = 48
@@ -47,6 +49,8 @@ Shader "Hidden/MaskComposite"
 
 			sampler2D _MainTex;
 			sampler2D _MaskTex;
+			sampler2D _SDFTex;
+			sampler2D _EdgeMinTex;
             float _FalloffDistance;
             float _FalloffPower;
             int _RaymarchSteps;
@@ -74,81 +78,27 @@ Shader "Hidden/MaskComposite"
 				// If this pixel is part of the target material, keep it
 				if (mask.r > 0.5)
 					return src;
-				
-				// Find the closest object and calculate falloff from it
-				float minFalloff = 1.0; // Start with full falloff (transparent)
-				
-                // Check each object position
-                [unroll(8)]
-                for (int obj = 0; obj < _ObjectCount; obj++)
+
+				// Prefer origin-based edge distance if available
+				float edgeMin = tex2D(_EdgeMinTex, i.uv).r;
+				if (edgeMin < 1e5)
 				{
-					float2 objectScreenPos;
-					if (obj == 0) objectScreenPos = _ObjectPos0.xy;
-					else if (obj == 1) objectScreenPos = _ObjectPos1.xy;
-					else if (obj == 2) objectScreenPos = _ObjectPos2.xy;
-					else if (obj == 3) objectScreenPos = _ObjectPos3.xy;
-					else if (obj == 4) objectScreenPos = _ObjectPos4.xy;
-					else if (obj == 5) objectScreenPos = _ObjectPos5.xy;
-					else if (obj == 6) objectScreenPos = _ObjectPos6.xy;
-					else objectScreenPos = _ObjectPos7.xy;
-					
-					// Raymarch from this object center to current pixel to find silhouette edge
-					float2 direction = normalize(i.uv - objectScreenPos);
-                    float2 currentPos = objectScreenPos;
-                    // Convert pixel step to UV units using _ScreenParams (x = width, y = height)
-                    float pixelUV = 1.0 / _ScreenParams.y;
-                    float baseStep = _StepSize * pixelUV;
-                    float coarseStep = baseStep * _CoarseMultiplier;
-                    float maxDistance = 0.5;
-					
-					float edgeDistance = 0.0;
-					bool foundEdge = false;
-					
-                    // Coarse march outward until we cross mask edge, then binary refine
-                    float2 prevPos = currentPos;
-                    fixed4 prevMask = tex2D(_MaskTex, prevPos);
-                    [loop]
-                    for (int step = 0; step < 128 && step < _RaymarchSteps; step++)
-                    {
-                        currentPos = currentPos + direction * coarseStep;
-                        float currentDist = length(currentPos - objectScreenPos);
-                        if (currentDist > maxDistance) break;
-                        fixed4 currentMask = tex2D(_MaskTex, currentPos);
-                        // Detect crossing from inside (white) to outside (black)
-                        if (prevMask.r > 0.5 && currentMask.r < 0.5)
-                        {
-                            // Binary refine between prevPos (inside) and currentPos (outside)
-                            float2 lo = prevPos;
-                            float2 hi = currentPos;
-                            [unroll(8)]
-                            for (int r = 0; r < 8; r++)
-                            {
-                                if (r >= _RefineSteps) break;
-                                float2 mid = (lo + hi) * 0.5;
-                                fixed4 midMask = tex2D(_MaskTex, mid);
-                                if (midMask.r > 0.5) lo = mid; else hi = mid;
-                            }
-                            float2 edgePos = hi;
-                            edgeDistance = length(edgePos - objectScreenPos);
-                            foundEdge = true;
-                            break;
-                        }
-                        prevPos = currentPos;
-                        prevMask = currentMask;
-                    }
-					
-					// Calculate falloff for this object
-					float2 delta = i.uv - objectScreenPos;
-					float currentDistance = length(delta);
-					float distanceFromEdge = currentDistance - edgeDistance;
-					float falloff = saturate(pow(distanceFromEdge / _FalloffDistance, _FalloffPower));
-					
-					// Keep the minimum falloff (closest to any object)
-					minFalloff = min(minFalloff, falloff);
+					float falloffEdge = saturate(pow(edgeMin / _FalloffDistance, _FalloffPower));
+					return lerp(_EdgeColor, src, falloffEdge);
+					//return float4(edgeMin,edgeMin,edgeMin,1);
+				}
+
+				// Use SDF if provided (signed distance in UV units). Zero means unavailable.
+				float sdf = tex2D(_SDFTex, i.uv).r;
+				if (sdf != 0)
+				{
+					float d = abs(sdf);
+					float falloffSDF = saturate(pow(d / _FalloffDistance, _FalloffPower));
+					return lerp(_EdgeColor, src, falloffSDF);
 				}
 				
-				// Interpolate between edge color (close to any edge) and transparent (far from all edges)
-				return lerp(_EdgeColor, src, minFalloff);
+                // Fallback: no precomputed buffers available, just return source
+                return src;
 			}
 			ENDCG
 		}

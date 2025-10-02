@@ -1,0 +1,75 @@
+#pragma kernel ClearEdgeMin
+#pragma kernel OriginEdgeDistance
+
+RWTexture2D<float> _EdgeMinOut;    // per-pixel min distance from edge (outside), UV units
+Texture2D _MaskTex;                // binary mask (R>0.5 inside)
+SamplerState sampler_PointClamp;
+
+int2 _TexSize;                     // (width, height)
+StructuredBuffer<float2> _Origins; // list of origin UVs for this frame
+int _OriginCount;
+float _StepUV;                     // step length in UV units
+int _MaxSteps;                     // max iterations when marching from origin
+float _MaxDistance;                // max UV distance to march (e.g., 0.5)
+
+[numthreads(8,8,1)]
+void ClearEdgeMin(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _TexSize.x || id.y >= _TexSize.y) return;
+    _EdgeMinOut[int2(id.x,id.y)] = 1e6; // large value
+}
+
+[numthreads(8,8,1)]
+void OriginEdgeDistance(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _TexSize.x || id.y >= _TexSize.y) return;
+    int2 p = int2(id.x, id.y);
+    float2 uv = (float2(p) + 0.5) / float2(_TexSize);
+    
+    // Sample current pixel to see if it's inside or outside
+    float currentMask = _MaskTex.SampleLevel(sampler_PointClamp, uv, 0).r;
+    
+    // If pixel is inside the object, distance to edge is 0
+    if (currentMask > 0.5)
+    {
+        _EdgeMinOut[p] = 0.0;
+        return;
+    }
+    
+    // If pixel is outside, find distance to nearest edge
+    float minDist = 1e6;
+    float stepSize = _StepUV;
+    
+    // Search outward from the pixel in expanding circles
+    for (int s = 1; s <= _MaxSteps; s++)
+    {
+        float searchRadius = s * stepSize;
+        if (searchRadius > _MaxDistance) break;
+        
+        // Sample 32 directions around the pixel for smoother results
+        for (int dir = 0; dir < 32; dir++)
+        {
+            float angle = dir * 3.14159 / 16.0; // 11.25 degree steps
+            float2 offset = float2(cos(angle), sin(angle)) * searchRadius;
+            float2 sampleUV = uv + offset;
+            
+            // Clamp to valid UV range
+            sampleUV = clamp(sampleUV, 0.0, 1.0);
+            
+            float sampleMask = _MaskTex.SampleLevel(sampler_PointClamp, sampleUV, 0).r;
+            if (sampleMask > 0.5) // Found edge
+            {
+                minDist = min(minDist, searchRadius);
+                break;
+            }
+        }
+        if (minDist < 1e6) break; // Found edge, stop searching
+    }
+
+    float prev = _EdgeMinOut[p];
+    if (minDist < prev) _EdgeMinOut[p] = minDist;
+
+    //_EdgeMinOut[p] = m;
+}
+
+
