@@ -1,6 +1,8 @@
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.Rendering;
+using static Unity.VisualScripting.Member;
 
 [ExecuteAlways]
 [RequireComponent(typeof(Camera))]
@@ -12,6 +14,7 @@ public class OutlineEffect : MonoBehaviour
 	[SerializeField] private float falloffDistance = 0.1f;
 	[SerializeField] private float falloffPower = 2.0f;
 	[SerializeField] private Color edgeColor = Color.yellow;
+    [SerializeField] private bool _debugging = false;
 
 	private Camera _camera;
 	private Camera _maskCamera;
@@ -19,8 +22,11 @@ public class OutlineEffect : MonoBehaviour
 	private Material _blackOverlayMaterial;
 	private RenderTexture _tempRT;
 	private bool _saveDebugMask = false;
+	private List<Renderer> _affectedRenderers = new List<Renderer>();
+	private Dictionary<Renderer, Material[]> _originalMaterials = new Dictionary<Renderer, Material[]>();
+	private List<Renderer> _allRenderers = new List<Renderer>();
 
-	private void OnEnable()
+    private void OnEnable()
 	{
 		_camera = GetComponent<Camera>();
 		InitResources();
@@ -34,24 +40,36 @@ public class OutlineEffect : MonoBehaviour
 			if (Application.isPlaying) Destroy(_maskCamera.gameObject); else DestroyImmediate(_maskCamera.gameObject);
 			_maskCamera = null;
 		}
-		if (_stencilWriteMaterial != null) { if (Application.isPlaying) Destroy(_stencilWriteMaterial); else DestroyImmediate(_stencilWriteMaterial); _stencilWriteMaterial = null; }
-		if (_blackOverlayMaterial != null) { if (Application.isPlaying) Destroy(_blackOverlayMaterial); else DestroyImmediate(_blackOverlayMaterial); _blackOverlayMaterial = null; }
-	}
+		if (_stencilWriteMaterial != null) 
+		{ 
+			if (Application.isPlaying) 
+				Destroy(_stencilWriteMaterial); 
+			else DestroyImmediate(_stencilWriteMaterial); 
+			_stencilWriteMaterial = null; 
+		}
+		if (_blackOverlayMaterial != null) 
+		{ 
+			if (Application.isPlaying) 
+				Destroy(_blackOverlayMaterial); 
+			else DestroyImmediate(_blackOverlayMaterial); 
+			_blackOverlayMaterial = null; 
+		}
+
+        _affectedRenderers.Clear();
+        _originalMaterials.Clear();
+        _allRenderers.Clear();
+    }
 
 	private void OnValidate()
 	{
 		if (isActiveAndEnabled)
-		{
 			InitResources();
-		}
 	}
 
 	private void Update()
 	{
 		if (Input.GetKeyDown(KeyCode.Space))
-		{
 			_saveDebugMask = true;
-		}
 	}
 
 	private void InitResources()
@@ -80,9 +98,8 @@ public class OutlineEffect : MonoBehaviour
 	private void InitRT(int width, int height)
 	{
 		if (_tempRT != null && (_tempRT.width != width || _tempRT.height != height))
-		{
 			CleanupRT();
-		}
+		
 		if (_tempRT == null && width > 0 && height > 0)
 		{
 			_tempRT = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
@@ -96,145 +113,177 @@ public class OutlineEffect : MonoBehaviour
 		if (_tempRT != null)
 		{
 			_tempRT.Release();
-			if (Application.isPlaying) Destroy(_tempRT); else DestroyImmediate(_tempRT);
+			if (Application.isPlaying) Destroy(_tempRT); 
+			else DestroyImmediate(_tempRT);
 			_tempRT = null;
 		}
 	}
 
 	private void OnRenderImage(RenderTexture source, RenderTexture destination)
 	{
-		if (_camera == null) _camera = GetComponent<Camera>();
-		InitResources();
-
-		if (targetMaterials == null || targetMaterials.Length == 0 || _stencilWriteMaterial == null || _blackOverlayMaterial == null)
-		{
-			Graphics.Blit(source, destination);
-			return;
-		}
-
-		InitRT(source.width, source.height);
-		if (_tempRT == null)
-		{
-			Graphics.Blit(source, destination);
-			return;
-		}
-
-		// Create a mask texture using a secondary camera
-		_maskCamera.CopyFrom(_camera);
-		_maskCamera.clearFlags = CameraClearFlags.SolidColor;
-		_maskCamera.backgroundColor = Color.black;
-		_maskCamera.targetTexture = _tempRT;
-
-		// Temporarily swap materials on target objects
-		var affectedRenderers = new List<Renderer>();
-		var originalMaterials = new Dictionary<Renderer, Material[]>();
-
-		var allRenderers = Object.FindObjectsOfType<Renderer>();
-		for (int r = 0; r < allRenderers.Length; r++)
-		{
-			var renderer = allRenderers[r];
-			var mats = renderer.sharedMaterials;
-			if (mats == null || mats.Length == 0) continue;
-			
-			bool hasTarget = false;
-			for (int i = 0; i < mats.Length; i++) 
-			{ 
-				for (int j = 0; j < targetMaterials.Length; j++)
-				{
-					if (mats[i] == targetMaterials[j]) 
-					{ 
-						hasTarget = true; 
-						break; 
-					}
-				}
-				if (hasTarget) break;
-			}
-			
-			if (hasTarget)
-			{
-				originalMaterials[renderer] = renderer.sharedMaterials;
-				var tempMats = new Material[renderer.sharedMaterials.Length];
-				for (int i = 0; i < tempMats.Length; i++)
-					tempMats[i] = _stencilWriteMaterial;
-				renderer.sharedMaterials = tempMats;
-				affectedRenderers.Add(renderer);
-				Debug.Log($"Swapped material on: {renderer.gameObject.name}");
-			}
-		}
-
-		// Render the mask
-		_maskCamera.Render();
-
-		// Restore original materials
-		foreach (var renderer in affectedRenderers)
-		{
-			if (renderer != null && originalMaterials.ContainsKey(renderer))
-				renderer.sharedMaterials = originalMaterials[renderer];
-		}
-
-		// DEBUG: Save the mask texture to see what's in it
-		if (_saveDebugMask)
-		{
-			try
-			{
-				RenderTexture.active = _tempRT;
-				Texture2D tex = new Texture2D(_tempRT.width, _tempRT.height, TextureFormat.RGB24, false);
-				tex.ReadPixels(new Rect(0, 0, _tempRT.width, _tempRT.height), 0, 0);
-				tex.Apply();
-				string path = System.IO.Path.Combine(Application.dataPath, "mask_debug.png");
-				System.IO.File.WriteAllBytes(path, tex.EncodeToPNG());
-				Debug.Log($"Mask saved to: {path}");
-				DestroyImmediate(tex);
-				_saveDebugMask = false;
-			}
-			catch (System.Exception e)
-			{
-				Debug.LogError($"Failed to save mask: {e.Message}");
-				_saveDebugMask = false;
-			}
-		}
-
-		// Calculate object's screen position (use first target object found)
-		Vector3 objectScreenPos = Vector3.zero;
-		bool foundObject = false;
-		for (int r = 0; r < allRenderers.Length; r++)
-		{
-			var renderer = allRenderers[r];
-			var mats = renderer.sharedMaterials;
-			if (mats == null || mats.Length == 0) continue;
-			
-			bool hasTarget = false;
-			for (int i = 0; i < mats.Length; i++) 
-			{ 
-				for (int j = 0; j < targetMaterials.Length; j++)
-				{
-					if (mats[i] == targetMaterials[j]) 
-					{ 
-						hasTarget = true; 
-						break; 
-					}
-				}
-				if (hasTarget) break;
-			}
-			
-			if (hasTarget)
-			{
-				objectScreenPos = _camera.WorldToScreenPoint(renderer.bounds.center);
-				objectScreenPos.x /= Screen.width;
-				objectScreenPos.y /= Screen.height;
-				foundObject = true;
-				break;
-			}
-		}
-
-		// Composite: keep source where mask is white, edge color elsewhere with falloff
-		_blackOverlayMaterial.SetTexture("_MainTex", source);
-		_blackOverlayMaterial.SetTexture("_MaskTex", _tempRT);
-		_blackOverlayMaterial.SetFloat("_FalloffDistance", falloffDistance);
-		_blackOverlayMaterial.SetFloat("_FalloffPower", falloffPower);
-		_blackOverlayMaterial.SetVector("_ObjectScreenPos", foundObject ? objectScreenPos : Vector3.one * 0.5f);
-		_blackOverlayMaterial.SetColor("_EdgeColor", edgeColor);
-		Graphics.Blit(source, destination, _blackOverlayMaterial);
-        
+		InitRender(ref source, ref destination);
+		RenderMask();
+		if (_debugging) DebugRenderState();
+		var objectScreenPos = Vector3.zero;
+		objectScreenPos = GetScreenPos(out bool foundObject);
+        BlitOutline(ref foundObject, ref objectScreenPos, ref source, ref destination);
 	}
+
+	#region Helper methods
+	private void InitRender(ref RenderTexture source, ref RenderTexture destination)
+	{
+        if (_camera == null)
+            _camera = GetComponent<Camera>();
+        InitResources();
+
+        if (targetMaterials == null || targetMaterials.Length == 0 || _stencilWriteMaterial == null || _blackOverlayMaterial == null)
+        {
+            Graphics.Blit(source, destination);
+            return;
+        }
+
+        InitRT(source.width, source.height);
+        if (_tempRT == null)
+        {
+            Graphics.Blit(source, destination);
+            return;
+        }
+
+        _affectedRenderers.Clear();
+        _originalMaterials.Clear();
+		_allRenderers.Clear();
+        _allRenderers = Object.FindObjectsOfType<Renderer>().ToList();
+    }
+
+    private void RenderMask()
+	{
+        // Create a mask texture using a secondary camera
+        _maskCamera.CopyFrom(_camera);
+        _maskCamera.clearFlags = CameraClearFlags.SolidColor;
+        _maskCamera.backgroundColor = Color.black;
+        _maskCamera.targetTexture = _tempRT;
+
+        
+        for (int r = 0; r < _allRenderers.Count; r++)
+        {
+            var renderer = _allRenderers[r];
+            var mats = renderer.sharedMaterials;
+            if (mats == null || mats.Length == 0) continue;
+
+            bool hasTarget = false;
+            for (int i = 0; i < mats.Length; i++)
+            {
+                for (int j = 0; j < targetMaterials.Length; j++)
+                {
+                    if (mats[i] == targetMaterials[j])
+                    {
+                        hasTarget = true;
+                        break;
+                    }
+                }
+                if (hasTarget) break;
+            }
+
+            if (hasTarget)
+            {
+                _originalMaterials[renderer] = renderer.sharedMaterials;
+                var tempMats = new Material[renderer.sharedMaterials.Length];
+                for (int i = 0; i < tempMats.Length; i++)
+                    tempMats[i] = _stencilWriteMaterial;
+                renderer.sharedMaterials = tempMats;
+                _affectedRenderers.Add(renderer);
+                Debug.Log($"Swapped material on: {renderer.gameObject.name}");
+            }
+        }
+
+        // Render the mask
+        _maskCamera.Render();
+
+        // Restore original materials
+        foreach (var renderer in _affectedRenderers)
+        {
+            if (renderer != null && _originalMaterials.ContainsKey(renderer))
+                renderer.sharedMaterials = _originalMaterials[renderer];
+        }
+    }
+
+    /// <summary>
+    /// Saves the current mask render texture to a PNG file under Assets if use presses Space Bar in Play Mode
+    /// </summary>
+	private void DebugRenderState()
+	{
+        // DEBUG: Save the mask texture to see what's in it
+        if (_saveDebugMask)
+        {
+            try
+            {
+                RenderTexture.active = _tempRT;
+                Texture2D tex = new Texture2D(_tempRT.width, _tempRT.height, TextureFormat.RGB24, false);
+                tex.ReadPixels(new Rect(0, 0, _tempRT.width, _tempRT.height), 0, 0);
+                tex.Apply();
+                string path = System.IO.Path.Combine(Application.dataPath, "mask_debug.png");
+                System.IO.File.WriteAllBytes(path, tex.EncodeToPNG());
+                Debug.Log($"Mask saved to: {path}");
+                DestroyImmediate(tex);
+                _saveDebugMask = false;
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"Failed to save mask: {e.Message}");
+                _saveDebugMask = false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Helps OnRenderImage identify the screenspace location of the current found object
+    /// </summary>
+	private Vector3 GetScreenPos(out bool foundObject)
+	{
+		var objectScreenPos = Vector3.zero;
+        foundObject = false;
+        for (int r = 0; r < _allRenderers.Count; r++)
+        {
+            var renderer = _allRenderers[r];
+            var mats = renderer.sharedMaterials;
+            if (mats == null || mats.Length == 0) continue;
+
+            bool hasTarget = false;
+            for (int i = 0; i < mats.Length; i++)
+            {
+                for (int j = 0; j < targetMaterials.Length; j++)
+                {
+                    if (mats[i] == targetMaterials[j])
+                    {
+                        hasTarget = true;
+                        break;
+                    }
+                }
+                if (hasTarget) break;
+            }
+
+            if (hasTarget)
+            {
+                objectScreenPos = _camera.WorldToScreenPoint(renderer.bounds.center);
+                objectScreenPos.x /= Screen.width;
+                objectScreenPos.y /= Screen.height;
+                foundObject = true;
+                break;
+            }
+        }
+		return objectScreenPos;
+    }
+
+	private void BlitOutline(ref bool foundObject, ref Vector3 objectScreenPos, ref RenderTexture source, ref RenderTexture destination)
+	{
+        // Composite: keep source where mask is white, edge color elsewhere with falloff
+        _blackOverlayMaterial.SetTexture("_MainTex", source);
+        _blackOverlayMaterial.SetTexture("_MaskTex", _tempRT);
+        _blackOverlayMaterial.SetFloat("_FalloffDistance", falloffDistance);
+        _blackOverlayMaterial.SetFloat("_FalloffPower", falloffPower);
+        _blackOverlayMaterial.SetVector("_ObjectScreenPos", foundObject ? objectScreenPos : Vector3.one * 0.5f);
+        _blackOverlayMaterial.SetColor("_EdgeColor", edgeColor);
+        Graphics.Blit(source, destination, _blackOverlayMaterial);
+    }
+    #endregion Helper methods
 }

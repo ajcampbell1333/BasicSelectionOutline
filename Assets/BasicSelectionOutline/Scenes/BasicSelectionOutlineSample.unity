@@ -434,6 +434,7 @@ MonoBehaviour:
   falloffDistance: 0.015
   falloffPower: 1
   edgeColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
+  _debugging: 0
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
