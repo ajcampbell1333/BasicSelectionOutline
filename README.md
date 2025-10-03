@@ -1,0 +1,3 @@
+This project includes OutlineEffect, a MonoBehaviour intended to go on the same game object as the Main Camera. It will auto-generate a secondary mask camera so that you don't have to worry about assigning layers or color masks or tags or anything else. The only thing you need to do to identify which object should receive highlight is to specify its material in targetMaterials in OutlineEffect. 
+
+From there, a set of shaders (including a signed-distance-field-based compute shader) will raymarch out from the origin of each object that has one of the target materials and render a color of your choice called EdgeColor at 100% alpha at that object's edge, and it will fall off to 0% alpha with a distance and power you can control in OutlineEffect's inspector.
